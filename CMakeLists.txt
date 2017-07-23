@@ -1,6 +1,15 @@
 CMAKE_MINIMUM_REQUIRED(VERSION 3.1)
 PROJECT(Snappy VERSION 1.1.6 LANGUAGES C CXX)
 
+OPTION (ENABLE_TESTS "Enable building tests and examples")
+OPTION (ENABLE_SO_VERSION "Enable shared library version" ON)
+OPTION (ENABLE_SHARED "Disable building shared" ON)
+OPTION (ENABLE_STATIC "Disable building static")
+
+IF (NOT ENABLE_SHARED AND NOT ENABLE_STATIC)
+    MESSAGE (FATAL_ERROR "It is invalid that both ENABLE_SHARED and ENABLE_STATIC are OFF.")
+ENDIF (NOT ENABLE_SHARED AND NOT ENABLE_STATIC)
+
 SET(CMAKE_INCLUDE_CURRENT_DIR ON)
 
 INCLUDE(CheckIncludeFiles)
@@ -47,24 +56,11 @@ IF (NOT HAVE_STDDEF_H)
     SET(HAVE_STDDEF_H 0)
 ENDIF (NOT HAVE_STDDEF_H)
 
-CHECK_LIBRARY_EXISTS(z zlibVersion "" HAVE_LIBZ)
-CHECK_LIBRARY_EXISTS(lzo2 lzo1x_1_15_compress "" HAVE_LIBLZO2)
-
 CHECK_CXX_SOURCE_COMPILES("int main(void) { return __builtin_expect(0, 1); }"
         HAVE_BUILTIN_EXPECT)
 
 CHECK_CXX_SOURCE_COMPILES("int main(void) { return __builtin_ctzll(0); }"
         HAVE_BUILTIN_CTZ)
-
-FIND_PACKAGE(GTest QUIET)
-IF(GTEST_FOUND)
-    SET(HAVE_GTEST 1)
-ENDIF()
-
-FIND_PACKAGE(Gflags QUIET)
-IF(GFLAGS_FOUND)
-    SET(HAVE_GFLAGS 1)
-ENDIF()
 
 CONFIGURE_FILE(${Snappy_SOURCE_DIR}/cmake/config.h.in config.h)
 
@@ -79,36 +75,64 @@ IF (WIN32)
     ADD_DEFINITIONS(-D_CRT_SECURE_NO_WARNINGS)
 ENDIF (WIN32)
 
+SET (snappy_SRCS
+    snappy-c.cc
+    snappy-c.h
+    snappy-sinksource.cc
+    snappy-sinksource.h
+    snappy-stubs-internal.cc
+    snappy-stubs-public.h
+    snappy.cc
+    snappy.h
+)
+
 # Define the main library.
-ADD_LIBRARY(snappy SHARED
-        snappy-c.cc
-        snappy-c.h
-        snappy-sinksource.cc
-        snappy-sinksource.h
-        snappy-stubs-internal.cc
-        snappy-stubs-public.h
-        snappy.cc
-        snappy.h)
+IF (ENABLE_SHARED)
+    ADD_LIBRARY(snappy SHARED ${snappy_SRCS})
+    TARGET_COMPILE_DEFINITIONS(snappy PRIVATE -DHAVE_CONFIG_H)
 
-TARGET_COMPILE_DEFINITIONS(snappy PRIVATE -DHAVE_CONFIG_H)
+    SET_TARGET_PROPERTIES(snappy PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON)
 
-SET_TARGET_PROPERTIES(snappy PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON)
+    IF (ENABLE_SO_VERSION)
+        SET_TARGET_PROPERTIES(snappy PROPERTIES VERSION ${PROJECT_VERSION}
+                              SOVERSION ${PROJECT_VERSION_MAJOR})
+    ENDIF (ENABLE_SO_VERSION)
+
+    INSTALL(TARGETS snappy
+            EXPORT SnappyTargets
+            RUNTIME DESTINATION bin
+            LIBRARY DESTINATION lib${LIB_SUFFIX}
+            ARCHIVE DESTINATION lib${LIB_SUFFIX})
+    INSTALL(EXPORT SnappyTargets NAMESPACE Snappy:: DESTINATION lib/cmake/Snappy)
+ENDIF (ENABLE_SHARED)
+
+IF (ENABLE_STATIC)
+    ADD_LIBRARY (snappy_s STATIC ${snappy_SRCS})
+    TARGET_COMPILE_DEFINITIONS(snappy_s PRIVATE -DHAVE_CONFIG_H)
+
+    IF (UNIX)
+        IF (CMAKE_COMPILER_IS_GNUCC)
+            SET_TARGET_PROPERTIES (snappy_s PROPERTIES COMPILE_FLAGS "-fPIC")
+        ENDIF (CMAKE_COMPILER_IS_GNUCC)
+
+        IF (CMAKE_SYSTEM_NAME STREQUAL "AIX")
+            SET (CMAKE_C_ARCHIVE_CREATE
+                 "<CMAKE_AR> -X32_64 cr <TARGET> <LINK_FLAGS> <OBJECTS>")
+        ENDIF (CMAKE_SYSTEM_NAME STREQUAL "AIX")
+    ENDIF (UNIX)
+
+    SET_TARGET_PROPERTIES (snappy_s PROPERTIES OUTPUT_NAME snappy)
+
+    # at build time you may specify the cmake variable LIB_SUFFIX to handle
+    # 64-bit systems which use 'lib64'
+    INSTALL (TARGETS snappy_s ARCHIVE DESTINATION lib${LIB_SUFFIX})
+ENDIF (ENABLE_STATIC)
 
 INSTALL(FILES snappy.h
         snappy-c.h
         snappy-sinksource.h
         ${Snappy_BINARY_DIR}/snappy-stubs-public.h
         DESTINATION include)
-
-INSTALL(TARGETS snappy
-        EXPORT SnappyTargets
-        RUNTIME DESTINATION bin
-        LIBRARY DESTINATION lib
-        ARCHIVE DESTINATION lib)
-INSTALL(EXPORT SnappyTargets NAMESPACE Snappy:: DESTINATION lib/cmake/Snappy)
-
-SET_TARGET_PROPERTIES(snappy PROPERTIES VERSION ${PROJECT_VERSION}
-                      SOVERSION ${PROJECT_VERSION_MAJOR})
 
 SET(INCLUDE_INSTALL_DIR include)
 SET(LIBRARY_INSTALL_DIR lib)
@@ -126,31 +150,48 @@ INSTALL(FILES ${Snappy_BINARY_DIR}/SnappyConfig.cmake
         ${Snappy_BINARY_DIR}/SnappyConfigVersion.cmake
         DESTINATION lib/cmake)
 
-ENABLE_TESTING()
 
-IF (HAVE_LIBZ)
-    LIST(APPEND COMPRESSION_LIBS z)
-ENDIF (HAVE_LIBZ)
+IF (ENABLE_TESTS)
+    CHECK_LIBRARY_EXISTS(z zlibVersion "" HAVE_LIBZ)
+    CHECK_LIBRARY_EXISTS(lzo2 lzo1x_1_15_compress "" HAVE_LIBLZO2)
 
-IF (HAVE_LIBLZO2)
-    LIST(APPEND COMPRESSION_LIBS lzo2)
-ENDIF (HAVE_LIBLZO2)
+    FIND_PACKAGE(GTest QUIET)
+    IF(GTEST_FOUND)
+        SET(HAVE_GTEST 1)
+    ENDIF()
 
-IF (HAVE_LIBLZF)
-    LIST(APPEND COMPRESSION_LIBS lzf)
-ENDIF (HAVE_LIBLZF)
+    FIND_PACKAGE(Gflags QUIET)
+    IF(GFLAGS_FOUND)
+        SET(HAVE_GFLAGS 1)
+    ENDIF()
 
-IF (HAVE_LIBQUICKLZ)
-    LIST(APPEND COMPRESSION_LIBS quicklz)
-ENDIF (HAVE_LIBQUICKLZ)
+    ENABLE_TESTING()
 
-ADD_EXECUTABLE(snappy-unittest snappy_unittest.cc snappy-test.cc)
-TARGET_COMPILE_DEFINITIONS(snappy-unittest PRIVATE -DHAVE_CONFIG_H)
-TARGET_LINK_LIBRARIES(snappy-unittest snappy ${COMPRESSION_LIBS}
-                      ${GFLAGS_LIBRARIES})
-TARGET_INCLUDE_DIRECTORIES(snappy-unittest BEFORE PRIVATE ${Snappy_SOURCE_DIR}
-                           ${GTEST_INCLUDE_DIRS} ${GFLAGS_INCLUDE_DIRS})
+    IF (HAVE_LIBZ)
+        LIST(APPEND COMPRESSION_LIBS z)
+    ENDIF (HAVE_LIBZ)
 
-ADD_TEST(NAME snappy-unittest
-         WORKING_DIRECTORY ${Snappy_SOURCE_DIR}
-         COMMAND ${Snappy_BINARY_DIR}/snappy-unittest)
+    IF (HAVE_LIBLZO2)
+        LIST(APPEND COMPRESSION_LIBS lzo2)
+    ENDIF (HAVE_LIBLZO2)
+
+    IF (HAVE_LIBLZF)
+        LIST(APPEND COMPRESSION_LIBS lzf)
+    ENDIF (HAVE_LIBLZF)
+
+    IF (HAVE_LIBQUICKLZ)
+        LIST(APPEND COMPRESSION_LIBS quicklz)
+    ENDIF (HAVE_LIBQUICKLZ)
+
+    ADD_EXECUTABLE(snappy-unittest snappy_unittest.cc snappy-test.cc)
+    TARGET_COMPILE_DEFINITIONS(snappy-unittest PRIVATE -DHAVE_CONFIG_H)
+    TARGET_LINK_LIBRARIES(snappy-unittest snappy ${COMPRESSION_LIBS}
+                          ${GFLAGS_LIBRARIES})
+    TARGET_INCLUDE_DIRECTORIES(snappy-unittest BEFORE PRIVATE ${Snappy_SOURCE_DIR}
+                               ${GTEST_INCLUDE_DIRS} ${GFLAGS_INCLUDE_DIRS})
+
+    ADD_TEST(NAME snappy-unittest
+             WORKING_DIRECTORY ${Snappy_SOURCE_DIR}
+             COMMAND ${Snappy_BINARY_DIR}/snappy-unittest)
+ENDIF (ENABLE_TESTS)
+# vim: set ts=4 sw=4 sts=4 et:
